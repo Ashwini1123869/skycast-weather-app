@@ -56,6 +56,15 @@ body.theme-desert {
     --card-bg: rgba(0, 0, 0, 0.25);
 }
 
+body.theme-night {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    --accent: #fcd34d;
+    --text-primary: #f8fafc;
+    --text-secondary: rgba(248, 250, 252, 0.6);
+    --card-bg: rgba(30, 41, 59, 0.4);
+    --card-border: rgba(255, 255, 255, 0.1);
+}
+
 body.theme-default {
     background: var(--bg-default);
 }

@@ -61,6 +61,12 @@ const desiAdvices = {
         "Bhai, bijli kadak rahi hai! Phone side mein rakho aur darr ke raho! ⚡😱",
         "Toofan aaya hai, ud mat jana! Khidkiyan band rakho. 🏠🌪️",
         "Aaj bahaar gaya to seedha 'Flying Jatt' ban jayega! Ghar pe raho. 💨"
+    ],
+    night: [
+        "Raat ho gayi hai bhai, rajai odho aur so jao! 💤🛌",
+        "Chand sitare nikal aaye hain, ab thandi hawa ka maza lo! 🌙✨",
+        "Bhoot-paret ka time ho gaya hai, darwaza band rakho! 👻🔦",
+        "Raat ki chai aur khamoshi—kya baat hai! ☕️🌃"
     ]
 };
 
@@ -221,7 +227,7 @@ function animate() {
     animationId = requestAnimationFrame(animate);
 }
 
-function setWeatherEffect(type, windSpeed = 0, temperature = 20) {
+function setWeatherEffect(type, windSpeed = 0, temperature = 20, isDay = 1) {
     currentWeatherType = type;
     particles = [];
     cancelAnimationFrame(animationId);
@@ -249,7 +255,7 @@ function setWeatherEffect(type, windSpeed = 0, temperature = 20) {
             p.y = Math.random() * elements.canvas.height;
             particles.push(p);
         }
-    } else if (temperature > 28) {
+    } else if (temperature > 28 && isDay) {
         for (let i = 0; i < 8; i++) particles.push(new Particle('sun'));
     }
 
@@ -266,7 +272,8 @@ function setWeatherEffect(type, windSpeed = 0, temperature = 20) {
 }
 
 // --- CORE LOGIC ---
-const getWeatherInfo = (code) => {
+const getWeatherInfo = (code, isDay = 1) => {
+    let result = null;
     for (let key in weatherCodes) {
         if (
             code == key ||
@@ -276,13 +283,22 @@ const getWeatherInfo = (code) => {
             (code >= 85 && code <= 86 && key == 71) ||
             (code >= 95 && code <= 99 && key == 95)
         ) {
-            return weatherCodes[key];
+            result = { ...weatherCodes[key] };
+            break;
         }
     }
-    return { desc: "Cloudy", icon: "https://openweathermap.org/img/wn/03d@2x.png", type: 'cloudy', sound: "https://www.soundjay.com/nature/sounds/wind-hissing-01.mp3" };
+    if (!result) {
+        result = { desc: "Cloudy", icon: "https://openweathermap.org/img/wn/03d@2x.png", type: 'cloudy', sound: "https://www.soundjay.com/nature/sounds/wind-hissing-01.mp3" };
+    }
+
+    if (!isDay && result.icon.includes('d@')) {
+        result.icon = result.icon.replace('d@', 'n@');
+    }
+    return result;
 };
 
-const getThemeClass = (type) => {
+const getThemeClass = (type, isDay = 1) => {
+    if (!isDay && type === 'clear') return 'theme-night';
     const map = { clear: 'theme-sunny', cloudy: 'theme-cloudy', rain: 'theme-rainy', snow: 'theme-snowy', storm: 'theme-stormy', desert: 'theme-desert' };
     return map[type] || 'theme-default';
 };
@@ -355,7 +371,7 @@ async function handleSearch() {
 async function fetchWeather(lat, lon, name) {
     showLoader(true); showError(false);
     try {
-        const res = await fetch(`${API_WEATHER}?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&hourly=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto`);
+        const res = await fetch(`${API_WEATHER}?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,is_day,weather_code,wind_speed_10m&hourly=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto`);
         const data = await res.json();
         updateUI(data, name);
     } catch (err) { showError(true); } finally { showLoader(false); }
@@ -363,7 +379,8 @@ async function fetchWeather(lat, lon, name) {
 
 function updateUI(data, name) {
     const current = data.current;
-    const info = getWeatherInfo(current.weather_code);
+    const isDay = current.is_day;
+    const info = getWeatherInfo(current.weather_code, isDay);
 
     const isDesert = ['rajasthan', 'dubai', 'sahara', 'nevada', 'arizona', 'thar', 'kutch', 'gobi', 'kalahari', 'mojave', 'saudi', 'oman', 'egypt', 'kuwait', 'qatar'].some(d => name.toLowerCase().includes(d));
 
@@ -373,8 +390,8 @@ function updateUI(data, name) {
         themeType = 'desert';
     }
 
-    document.body.className = getThemeClass(themeType);
-    setWeatherEffect(themeType, current.wind_speed_10m, current.temperature_2m);
+    document.body.className = getThemeClass(themeType, isDay);
+    setWeatherEffect(themeType, current.wind_speed_10m, current.temperature_2m, isDay);
 
     // Dynamic Sound Selection
     let finalSound = info.sound;
@@ -393,7 +410,10 @@ function updateUI(data, name) {
     }
 
     // Desi Mood
-    const advices = desiAdvices[info.type] || desiAdvices.cloudy;
+    let advices = desiAdvices[info.type] || desiAdvices.cloudy;
+    if (!isDay && Math.random() > 0.5) {
+        advices = desiAdvices.night;
+    }
     const currentAdvice = advices[Math.floor(Math.random() * advices.length)];
     elements.moodText.innerText = currentAdvice;
     elements.desiMood.classList.remove('hidden');
@@ -411,7 +431,10 @@ function updateUI(data, name) {
     let nowIdx = data.hourly.time.findIndex(h => h === currentIso);
     if (nowIdx === -1) nowIdx = 0;
     elements.hourlyForecast.innerHTML = data.hourly.time.slice(nowIdx, nowIdx + 12).map((time, idx) => {
-        const hInfo = getWeatherInfo(data.hourly.weather_code[nowIdx + idx]);
+        // We don't have is_day for hourly easily here without more logic, but we can estimate
+        const hour = new Date(time).getHours();
+        const estimatedIsDay = hour >= 6 && hour <= 18 ? 1 : 0;
+        const hInfo = getWeatherInfo(data.hourly.weather_code[nowIdx + idx], estimatedIsDay);
         return `
             <div class="hourly-item ${idx === 0 ? 'now' : ''}">
                 <div class="time">${idx === 0 ? "Now" : idx === 1 ? "1h later" : new Date(time).getHours() + ":00"}</div>
