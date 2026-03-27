@@ -11,15 +11,7 @@
 - **"Desi" Mood Advisories:** Fun, localized mood quotes and weather advisories for extra personality.
 - **Audio Integration:** Ambient weather sounds that match your current weather state dynamically.
 - **Responsive Design:** Fully responsive layout tailored for both mobile devices and desktop orientations.
-
-## 🚀 Built With
-
-- **HTML5 & Vanilla CSS:** For structural semantic content, responsive layout, and state-of-the-art glassmorphic styling elements.
-- **Vanilla JavaScript:** For API integration, asynchronous DOM manipulation, debounced auto-suggest, and the high-performance custom particle animation loop.
-- **Open-Meteo API:** Used natively for reliable, detailed, and speedy real-time weather forecasting.
-- **Nominatim API:** Used for accurate, globally expansive geocoding and real-time location suggestion fetching.
-- **Vite:** Handled via Node.js as the lightning-fast build tool and local development server.
-
+- 
 ## 🛠️ Usage / Installation
 
 To view and run this project locally:
@@ -40,8 +32,3 @@ To view and run this project locally:
    ```bash
    npm run dev
    ```
-
-## 🌐 Deployment
-To compile and deploy this project to the web:
-1. Run `npm run build` to automatically bundle and generate the highly optimized production build into a localized `dist/` tracking folder.
-2. Upload the `dist/` folder to a service like Netlify, or deploy automatically by connecting your repository directly to Vercel or GitHub Pages.
