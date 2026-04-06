@@ -1,4 +1,5 @@
 const API_GEO = "https://nominatim.openstreetmap.org/search";
+const API_REVERSE_GEO = "https://nominatim.openstreetmap.org/reverse";
 const API_WEATHER = "https://api.open-meteo.com/v1/forecast";
 
 const elements = {
@@ -20,7 +21,9 @@ const elements = {
     suggestions: document.getElementById('suggestions'),
     desiMood: document.getElementById('desiMood'),
     moodText: document.getElementById('moodText'),
-    canvas: document.getElementById('weatherCanvas')
+    canvas: document.getElementById('weatherCanvas'),
+    lifeSummary: document.getElementById('lifeSummary'),
+    lifeCards: document.getElementById('lifeCards')
 };
 
 // --- DATA & CONFIG ---
@@ -303,6 +306,180 @@ const getThemeClass = (type, isDay = 1) => {
     return map[type] || 'theme-default';
 };
 
+function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+}
+
+function formatHourLabel(time, fallback = "Later") {
+    if (!time) return fallback;
+    return new Date(time).toLocaleTimeString('en-US', { hour: 'numeric', hour12: true });
+}
+
+function formatWindowLabel(hours) {
+    if (!hours || hours.length === 0) return "later today";
+    if (hours.length === 1) return hours[0].label;
+    return `${hours[0].label} to ${hours[hours.length - 1].label}`;
+}
+
+function isWetWeather(info, precipitation = 0) {
+    return ['rain', 'storm', 'snow'].includes(info.type) || precipitation >= 45;
+}
+
+function isOutdoorFriendly(hour) {
+    return !isWetWeather(hour.info, hour.precipitation) && hour.temperature >= 18 && hour.temperature <= 31 && hour.windSpeed < 22;
+}
+
+function isLaundryFriendly(hour) {
+    return hour.isDay && !isWetWeather(hour.info, hour.precipitation) && hour.precipitation < 20 && hour.windSpeed < 18 && hour.temperature >= 18;
+}
+
+function scoreOutdoorHour(hour) {
+    if (isWetWeather(hour.info, hour.precipitation)) return -100;
+    const temperatureScore = 36 - Math.abs(hour.temperature - 24) * 3;
+    const windPenalty = Math.max(0, hour.windSpeed - 10) * 2.2;
+    const daylightBonus = hour.isDay ? 8 : 0;
+    return temperatureScore + daylightBonus - windPenalty - hour.precipitation * 0.4;
+}
+
+function findBestWindow(hours, windowSize, predicate, scorer) {
+    let bestWindow = null;
+    let bestScore = -Infinity;
+
+    for (let index = 0; index <= hours.length - windowSize; index += 1) {
+        const windowHours = hours.slice(index, index + windowSize);
+        if (!windowHours.every(predicate)) continue;
+
+        const windowScore = windowHours.reduce((total, hour) => total + scorer(hour), 0);
+        if (windowScore > bestScore) {
+            bestScore = windowScore;
+            bestWindow = windowHours;
+        }
+    }
+
+    return bestWindow;
+}
+
+function getHourlyForecastSlice(data, limit = 12) {
+    const currentIso = data.current.time.split(':')[0] + ':00';
+    let startIndex = data.hourly.time.findIndex((hour) => hour === currentIso);
+    if (startIndex === -1) startIndex = 0;
+
+    return data.hourly.time.slice(startIndex, startIndex + limit).map((time, index) => {
+        const hourIndex = startIndex + index;
+        const hourValue = new Date(time).getHours();
+        const isDay = hourValue >= 6 && hourValue <= 18 ? 1 : 0;
+
+        return {
+            index,
+            time,
+            label: index === 0 ? "Now" : formatHourLabel(time),
+            hourValue,
+            isDay,
+            temperature: Math.round(data.hourly.temperature_2m[hourIndex]),
+            weatherCode: data.hourly.weather_code[hourIndex],
+            precipitation: data.hourly.precipitation_probability?.[hourIndex] ?? 0,
+            windSpeed: Math.round(data.hourly.wind_speed_10m?.[hourIndex] ?? data.current.wind_speed_10m),
+            info: getWeatherInfo(data.hourly.weather_code[hourIndex], isDay)
+        };
+    });
+}
+
+function buildWeatherLifePlan(data) {
+    const upcomingHours = getHourlyForecastSlice(data);
+    const bestStepOutWindow = findBestWindow(upcomingHours, 2, isOutdoorFriendly, scoreOutdoorHour);
+    const umbrellaHour = upcomingHours.find((hour) => isWetWeather(hour.info, hour.precipitation));
+    const laundryWindow = findBestWindow(upcomingHours, 3, isLaundryFriendly, scoreOutdoorHour);
+    const movementHours = upcomingHours.slice(0, 4);
+    const movementScore = Math.round(
+        movementHours.reduce((total, hour) => total + clamp(scoreOutdoorHour(hour), 0, 40), 0) / Math.max(movementHours.length, 1) * 2.5
+    );
+    const bikeRiskHour = upcomingHours.find((hour) => isWetWeather(hour.info, hour.precipitation) || hour.windSpeed >= 24);
+
+    let summary = "A steady weather window is open for everyday plans.";
+    if (bestStepOutWindow && umbrellaHour) {
+        summary = `Best time to head out is ${formatWindowLabel(bestStepOutWindow)} before conditions turn around ${umbrellaHour.label.toLowerCase()}.`;
+    } else if (bestStepOutWindow) {
+        summary = `The cleanest outdoor window lines up around ${formatWindowLabel(bestStepOutWindow)}.`;
+    } else if (umbrellaHour) {
+        summary = `Weather gets tricky around ${umbrellaHour.label.toLowerCase()}, so keep plans flexible.`;
+    }
+
+    const stepOutCard = bestStepOutWindow
+        ? {
+            tone: 'good',
+            title: 'Best time out',
+            timing: formatWindowLabel(bestStepOutWindow),
+            detail: `Mild temperatures and lighter wind make this your smoothest outdoor window.`
+        }
+        : {
+            tone: 'caution',
+            title: 'Best time out',
+            timing: 'Keep it short',
+            detail: `There is no strong comfort window ahead, so shorter errands will feel better than long outings.`
+        };
+
+    const rainCard = umbrellaHour
+        ? {
+            tone: umbrellaHour.index <= 1 ? 'alert' : 'caution',
+            title: 'Rain watch',
+            timing: umbrellaHour.index <= 1 ? 'Umbrella now' : `After ${umbrellaHour.label}`,
+            detail: `Rain risk picks up with ${umbrellaHour.info.desc.toLowerCase()} conditions, so carry cover before you leave.`
+        }
+        : {
+            tone: 'good',
+            title: 'Rain watch',
+            timing: 'No umbrella needed',
+            detail: `The next few hours stay mostly dry, so you can travel lighter for now.`
+        };
+
+    let movementCard = null;
+    if (movementScore >= 72) {
+        movementCard = {
+            tone: 'good',
+            title: 'Walk and commute',
+            timing: 'Comfortable now',
+            detail: bikeRiskHour && bikeRiskHour.index > 1
+                ? `Walking feels good, but biking gets rough around ${bikeRiskHour.label.toLowerCase()}.`
+                : `This is a good stretch for walks, short rides, and everyday commuting.`
+        };
+    } else if (bikeRiskHour) {
+        movementCard = {
+            tone: 'alert',
+            title: 'Walk and commute',
+            timing: `Watch ${bikeRiskHour.label}`,
+            detail: `Wind or wet weather can make biking awkward, so covered transport will feel safer.`
+        };
+    } else {
+        movementCard = {
+            tone: 'caution',
+            title: 'Walk and commute',
+            timing: 'Take it easy',
+            detail: `Conditions are usable, but heat or wind may make longer walks less comfortable.`
+        };
+    }
+
+    const laundryCard = laundryWindow
+        ? {
+            tone: 'good',
+            title: 'Laundry-safe window',
+            timing: formatWindowLabel(laundryWindow),
+            detail: `Dry air and calmer wind give clothes the best shot at drying outside.`
+        }
+        : {
+            tone: umbrellaHour ? 'alert' : 'caution',
+            title: 'Laundry-safe window',
+            timing: umbrellaHour ? 'Skip outdoor drying' : 'Indoor drying is safer',
+            detail: umbrellaHour
+                ? `Rain risk makes outdoor drying unreliable for the next part of the day.`
+                : `There is no clean daytime drying block ahead, so a sheltered setup will work better.`
+        };
+
+    return {
+        summary,
+        cards: [stepOutCard, rainCard, movementCard, laundryCard]
+    };
+}
+
 // --- DEBOUNCE UTILITY ---
 function debounce(func, wait) {
     let timeout;
@@ -368,11 +545,84 @@ async function handleSearch() {
     } catch (err) { showError(true); }
 }
 
+async function fetchLocationName(lat, lon) {
+    try {
+        const res = await fetch(`${API_REVERSE_GEO}?lat=${lat}&lon=${lon}&format=json&zoom=10&addressdetails=1`);
+        const data = await res.json();
+        const address = data.address || {};
+        const primaryName =
+            address.city ||
+            address.town ||
+            address.village ||
+            address.hamlet ||
+            address.suburb ||
+            address.county ||
+            data.name;
+        const region = address.state || address.country;
+
+        if (primaryName && region && primaryName !== region) {
+            return `${primaryName}, ${region}`;
+        }
+
+        return primaryName || data.display_name || "Your Location";
+    } catch (err) {
+        return "Your Location";
+    }
+}
+
+async function fetchWeatherData(lat, lon) {
+    const res = await fetch(`${API_WEATHER}?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,is_day,weather_code,wind_speed_10m&hourly=temperature_2m,weather_code,precipitation_probability,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto`);
+    return res.json();
+}
+
+async function showCurrentLocationWeather(lat, lon) {
+    showLoader(true);
+    showError(false);
+
+    try {
+        const [data, locationName] = await Promise.all([
+            fetchWeatherData(lat, lon),
+            fetchLocationName(lat, lon)
+        ]);
+
+        const readableLocation = locationName || "Your Location";
+        elements.locationInput.value = readableLocation;
+        updateUI(data, readableLocation);
+    } catch (err) {
+        showError(true);
+    } finally {
+        showLoader(false);
+    }
+}
+
+async function locateUserOnLoad() {
+    if (!('geolocation' in navigator)) {
+        showLoader(false);
+        return;
+    }
+
+    showLoader(true);
+
+    navigator.geolocation.getCurrentPosition(
+        ({ coords }) => {
+            const { latitude, longitude } = coords;
+            showCurrentLocationWeather(latitude, longitude);
+        },
+        () => {
+            showLoader(false);
+        },
+        {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 300000
+        }
+    );
+}
+
 async function fetchWeather(lat, lon, name) {
     showLoader(true); showError(false);
     try {
-        const res = await fetch(`${API_WEATHER}?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,is_day,weather_code,wind_speed_10m&hourly=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto`);
-        const data = await res.json();
+        const data = await fetchWeatherData(lat, lon);
         updateUI(data, name);
     } catch (err) { showError(true); } finally { showLoader(false); }
 }
@@ -381,6 +631,8 @@ function updateUI(data, name) {
     const current = data.current;
     const isDay = current.is_day;
     const info = getWeatherInfo(current.weather_code, isDay);
+    const weatherLifePlan = buildWeatherLifePlan(data);
+    const upcomingHours = getHourlyForecastSlice(data);
 
     const isDesert = ['rajasthan', 'dubai', 'sahara', 'nevada', 'arizona', 'thar', 'kutch', 'gobi', 'kalahari', 'mojave', 'saudi', 'oman', 'egypt', 'kuwait', 'qatar'].some(d => name.toLowerCase().includes(d));
 
@@ -425,24 +677,23 @@ function updateUI(data, name) {
     elements.weatherIcon.src = info.icon;
     elements.humidity.innerText = `${current.relative_humidity_2m}%`;
     elements.windSpeed.innerText = `${current.wind_speed_10m} km/h`;
+    elements.lifeSummary.innerText = weatherLifePlan.summary;
+    elements.lifeCards.innerHTML = weatherLifePlan.cards.map((card) => `
+        <article class="life-card tone-${card.tone}">
+            <span class="life-card-label">${card.title}</span>
+            <strong class="life-card-time">${card.timing}</strong>
+            <p class="life-card-detail">${card.detail}</p>
+        </article>
+    `).join('');
 
     // Hourly
-    const currentIso = data.current.time.split(':')[0] + ':00';
-    let nowIdx = data.hourly.time.findIndex(h => h === currentIso);
-    if (nowIdx === -1) nowIdx = 0;
-    elements.hourlyForecast.innerHTML = data.hourly.time.slice(nowIdx, nowIdx + 12).map((time, idx) => {
-        // We don't have is_day for hourly easily here without more logic, but we can estimate
-        const hour = new Date(time).getHours();
-        const estimatedIsDay = hour >= 6 && hour <= 18 ? 1 : 0;
-        const hInfo = getWeatherInfo(data.hourly.weather_code[nowIdx + idx], estimatedIsDay);
-        return `
-            <div class="hourly-item ${idx === 0 ? 'now' : ''}">
-                <div class="time">${idx === 0 ? "Now" : idx === 1 ? "1h later" : new Date(time).getHours() + ":00"}</div>
-                <img src="${hInfo.icon}" alt="Icon">
-                <div class="temp">${Math.round(data.hourly.temperature_2m[nowIdx + idx])}°</div>
+    elements.hourlyForecast.innerHTML = upcomingHours.map((hour) => `
+            <div class="hourly-item ${hour.index === 0 ? 'now' : ''}">
+                <div class="time">${hour.index === 0 ? "Now" : hour.label}</div>
+                <img src="${hour.info.icon}" alt="Icon">
+                <div class="temp">${hour.temperature}°</div>
             </div>
-        `;
-    }).join('');
+        `).join('');
 
     // Daily
     elements.dailyForecast.innerHTML = data.daily.time.map((date, idx) => {
@@ -463,4 +714,4 @@ function showLoader(show) { elements.loader.classList.toggle('hidden', !show); }
 function showError(show) { elements.errorMsg.classList.toggle('hidden', !show); elements.weatherOutput.classList.add('hidden'); if (show) showLoader(false); }
 
 document.addEventListener('click', (e) => { if (!elements.locationInput.contains(e.target)) elements.suggestions.classList.add('hidden'); });
-window.onload = () => showLoader(false);
+window.addEventListener('load', locateUserOnLoad);
